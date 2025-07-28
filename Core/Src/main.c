@@ -1,4 +1,4 @@
- /* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file           : main.c
@@ -18,11 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include <Extended-KF.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "Extended-KF.h"
+#include "Pendulum.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,14 +42,34 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+TIM_HandleTypeDef htim2;
+
 /* USER CODE BEGIN PV */
 
+// EKF buffers
+
+float thetap = (3.0f*PI/4.0f);       // Initial angle (rad)
+float theta_dotp = 0.0f;   // Initial angular velocity (rad/s)
+float u_data[1];
+arm_matrix_instance_f32 u;
+float x_buffer[2] ={ -3.0f*PI/4.0f,0 };  // Initial state guess from pendulum sim
+
+float R_buffer[1] = {0};
+float Fx_buffer[4] = {0};
+float Hx_buffer[2] = {0};
+float K_buffer[2] = {0};
+float z_data[1];
+arm_matrix_instance_f32 z;
+uint16_t dim_z = 1 ;
+uint16_t dim_x = 2 ;
+float theta_predicted;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -57,6 +77,52 @@ static void MX_GPIO_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+
+// EKF handle
+EKF_HandleTypeDef* ekf;
+
+/* Pendulum nonlinear state transition function: x_k+1 = f(x_k, u, dt) */
+void pendulum_f( arm_matrix_instance_f32* x,  arm_matrix_instance_f32* u, float dt, arm_matrix_instance_f32* x_pred) {
+    const float dt_local = dt;
+    const float m = 1.0f;
+
+    float theta = x->pData[0];
+    float theta_dot = x->pData[1];
+    float torque = u->pData[0];
+
+    // Euler integration for state transition
+    float theta_new = theta + theta_dot * dt_local;
+    float theta_dot_new = theta_dot + (torque / (m * L * L) - (G / L) * sinf(theta)) * dt_local;
+
+    x_pred->pData[0] = theta_new;
+    x_pred->pData[1] = theta_dot_new;
+}
+
+void pendulum_F_jacobian( arm_matrix_instance_f32* x,  arm_matrix_instance_f32* u, float dt, arm_matrix_instance_f32* F) {
+
+
+    float theta = x->pData[0];
+
+    // Zero all elements first
+    for (uint16_t i = 0; i < F->numRows * F->numCols; i++) {
+        F->pData[i] = 0.0f;
+    }
+
+    F->pData[0] = 1.0f;          // ∂f1/∂θ
+    F->pData[1] = dt;            // ∂f1/∂θ_dot
+    F->pData[2] = - (G / L) * cosf(theta) * dt; // ∂f2/∂θ
+    F->pData[3] = 1.0f;          // ∂f2/∂θ_dot
+}
+
+void pendulum_h( arm_matrix_instance_f32* x, arm_matrix_instance_f32* z_pred) {
+    // Measurement is angle only
+    z_pred->pData[0] = x->pData[0];
+}
+
+void pendulum_H_jacobian( arm_matrix_instance_f32* x,  arm_matrix_instance_f32* u, float dt, arm_matrix_instance_f32* H) {
+    H->pData[0] = 1.0f;  // ∂h/∂θ
+    H->pData[1] = 0.0f;  // ∂h/∂θ_dot
+}
 /* USER CODE END 0 */
 
 /**
@@ -91,7 +157,42 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+
+
+
+  // Covariances
+  float P_f32[4] = {
+		  0.00000001f,  0.0f,
+		  0.0f, 0.00000001f,
+  };
+      float Q_f32[4] = {
+          0, 0,
+		  0, 0.002,
+      };  // Process noise covariance
+  R_buffer[0] = 0.001f; // Measurement noise covariance
+
+  EKF_Init(ekf,
+           dim_x,
+           dim_z,
+           x_buffer,
+           P_f32,
+           Q_f32,
+           R_buffer,
+           Fx_buffer,
+           Hx_buffer,
+           K_buffer,
+           pendulum_f,
+           pendulum_h,
+           pendulum_F_jacobian,
+           pendulum_H_jacobian);
+  arm_mat_init_f32(&u, 1, 1, u_data);
+  arm_mat_init_f32(&z, 1, 1, z_data);
+  HAL_Delay(2000);
+  HAL_TIM_Base_Start_IT(&htim2);
+
 
   /* USER CODE END 2 */
 
@@ -166,6 +267,51 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 959;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -224,7 +370,19 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
+    	float dt = 0.01;
+    	float measurement_noise = 0.1;
+        // Advance the pendulum state with noise
+        update_pendulum();
+
+        z_data[0] = thetap + generate_white_noise(measurement_noise);
+
+        // EKF predict and update
+        EKF_Step(ekf, &u, &z, dt);
+
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */

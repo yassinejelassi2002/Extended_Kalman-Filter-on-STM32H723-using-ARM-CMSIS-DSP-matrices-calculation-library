@@ -1,4 +1,5 @@
 "./Core/Src/Extended-KF.o"
+"./Core/Src/Pendulum.o"
 "./Core/Src/main.o"
 "./Core/Src/stm32h7xx_hal_msp.o"
 "./Core/Src/stm32h7xx_it.o"

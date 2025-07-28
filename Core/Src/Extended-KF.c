@@ -7,7 +7,8 @@
 #include "main.h"
 #include "Extended-KF.h"
 #include <string.h>
-
+float X_data_updated_probe;
+float X_data_predicted_probe;
 void EKF_Init(EKF_HandleTypeDef* ekf,
               uint16_t dim_x,
               uint16_t dim_z,
@@ -48,7 +49,7 @@ void EKF_Init(EKF_HandleTypeDef* ekf,
     ekf->H_jacobian = H_jacobian;
 }
 
-void EKF_Predict(EKF_HandleTypeDef* ekf, const arm_matrix_instance_f32* u, float dt) {
+void EKF_Predict(EKF_HandleTypeDef* ekf,  arm_matrix_instance_f32* u, float dt) {
     float x_pred_data[ekf->dim_x];
     arm_matrix_instance_f32 x_pred;
     arm_mat_init_f32(&x_pred, ekf->dim_x, 1, x_pred_data);
@@ -58,6 +59,9 @@ void EKF_Predict(EKF_HandleTypeDef* ekf, const arm_matrix_instance_f32* u, float
     ekf->F_jacobian(&ekf->x, u, dt, &ekf->Fx);
 
     // x = f(x,u)
+    /*
+     * TODO replace the memcpy with cmsis
+     */
     memcpy(ekf->x.pData, x_pred.pData, sizeof(float)*ekf->dim_x);
 
     // P = F P F^T + Q
@@ -70,9 +74,10 @@ void EKF_Predict(EKF_HandleTypeDef* ekf, const arm_matrix_instance_f32* u, float
     arm_mat_trans_f32(&ekf->Fx, &FxT);
     arm_mat_mult_f32(&temp, &FxT, &ekf->P);
     arm_mat_add_f32(&ekf->P, &ekf->Q, &ekf->P);
+    X_data_predicted_probe=ekf->x.pData[0];
 }
 
-void EKF_Update(EKF_HandleTypeDef* ekf, const arm_matrix_instance_f32* z) {
+void EKF_Update(EKF_HandleTypeDef* ekf,  arm_matrix_instance_f32* z) {
     ekf->H_jacobian(&ekf->x, NULL, 0, &ekf->Hx);
 
     float z_pred_data[ekf->dim_z];
@@ -142,9 +147,11 @@ void EKF_Update(EKF_HandleTypeDef* ekf, const arm_matrix_instance_f32* z) {
 
     arm_mat_sub_f32(&I, &KH, &I_minus_KH);
     arm_mat_mult_f32(&I_minus_KH, &ekf->P, &ekf->P);
+
+    X_data_updated_probe = ekf->x.pData[0];
 }
 
-void EKF_Step(EKF_HandleTypeDef* ekf, const arm_matrix_instance_f32* u, const arm_matrix_instance_f32* z, float dt) {
+void EKF_Step(EKF_HandleTypeDef* ekf,  arm_matrix_instance_f32* u,  arm_matrix_instance_f32* z, float dt) {
     EKF_Predict(ekf, u, dt);
     EKF_Update(ekf, z);
 
